@@ -1,0 +1,155 @@
+#网络库requests，解析库beautifulsoup和正则表达式，数据库mongodb
+#第一步：目标站点分析
+#第二步：requests抓取索引页内容；抓取详情页内容；下载图片及保存数据库；开启循环及多线程。
+from urllib.parse import urlencode
+import requests
+from requests.exceptions import RequestException
+import requests
+#开启多线程
+from multiprocessing import Pool
+from json import JSONDecodeError
+
+def get_page_index(offset,keyword):
+    data={
+        'offset' : offset,
+        'format': 'json',
+        'keyword': keyword,
+        'autoload': 'true',
+        'count': '20',
+        'cur_tab': 3
+    }
+    # urlencode(data)对data进行编码，将字典对象转换成URL的请求参数，这是urllib库提高的一个编码方法
+    url='https://www.toutiao.com/search_content/?' + urlencode(data)
+    try:
+        response=requests.get(url)
+        #判断返回状态码，为200代表成功
+        if response.status_code==200:
+            return response.text
+        return None
+    #处理异常
+    except RequestException:
+        print('请求索引页出错') 
+        return None
+
+#得到json数据，对内容进行解析：
+def parse_page_index(html):
+    try:
+    #json.loads(html)将当期html由json字符串形式，转换为json变量（对象）
+        data=json.loads(html)
+        #要拿到数据为‘data’属性下的‘article_url’，使用if判断保证json数据里含有'data'属性
+        #data.keys()返回该json所有的键名
+        if data and 'data' in data.keys():
+            for item in data.get('data'):
+                yield item.get('article_url')    #yield构造生成器将所有的article_url解析出来
+    except JSONDecodeError:
+        pass
+
+#得到详情页信息
+def get_page_detail(url):
+    try:
+        response=requests.get(url)
+        #判断返回状态码，为200代表成功
+        if response.status_code==200:
+            return response.text
+        return None
+    #处理异常
+    except RequestException:
+        print('请求详情页出错',url)
+        return None
+
+
+#存储数据到mongodb
+建立配置文件config.py
+MONGO_URL='localhost'
+MONGO_DB='toutiao'    #数据库名称
+MONGO_TABLE='toutiao'   #表名称
+
+#在原始文件中引入该配置文件,并声明一个数据库对象
+from config import *
+import pymongo
+client=pymongo.MongoClient(MONGO_URL,connect=False)
+db=client[MONGO_DB]
+
+#定义一个存储到数据库的方法
+def save_to_mongo(result):
+    if db[MONGO_TABLE].insert(result):
+        print('存储到mongodb成功',result)
+        return True
+    return False
+
+
+#接下来，把图片下载下来
+def download_image(url):
+    print('正在下载',url)
+    try:
+        response = requests.get(url)
+        # 判断返回状态码，为200代表成功
+        if response.status_code == 200:
+            save_image(response.content)   #content返回二进制内容，对图片用content
+        return None
+        # 处理异常
+    except RequestException:
+        print('请求图片出错',url)
+        return None
+#接下来定义一个将下载下来的内容存成图片的方法
+from hashlib import md5
+def save_image(content):
+    file_path='{0}/{1}.{2}'.format(os.getcwd(),md5(content).hexdigest(),'jpg')
+    if not os.path.exists(file_path):
+        with open(file_path,'wb') as f:
+            f.write(content)
+            f.close()
+
+#在下面方法中下载图片
+#对json字符串解析，提取出里面的URL
+def parse_page_detail(html,url):
+    soup=BeautifulSoup(html,'lxml')    #解析
+    title=soup.select('title')[0].get_text()   #get_text()获取文本信息
+    print(title )
+    image_pattern=re.compile(';&quot;(.*?)&quot; img_width',re.S)     #re.compile定义正则表达式对象
+    result=re.search(image_pattern ,html)
+    if result:   #判断匹配是否成功
+        print(result.group(1))
+        data = json.loads(parse_page_detail(html))  # json.loads()方法将字符串转换为对象
+        if data and 'sub_images' in data.keys():
+            sub_images = data.get('sub_images')
+            images = [item.get('url') for item in sub_images]
+            for image in images:
+                download_image(image)
+            return {
+                'title': title,
+                'url':url,
+                'images':images
+            }
+
+#接下来定义一个将下载下来的内容存成图片的方法
+from hashlib import md5
+def save_image(content):
+    file_path='{0}/{1}.{2}'.format(os.getcwd(),md5(content).hexdigest(),'jpg')
+    if not os.path.exists(file_path):
+        with open(file_path,'wb') as f:
+            f.write(content)
+            f.close()
+
+#在配置文件中定义循环页数
+GROUP_START=1
+GROUP_END=20
+KEYWORD='街拍'
+
+def main(offset):
+    html=get_page_index(offset,KEYWORD)
+    for url in parse_page_index(html):
+       html=get_page_detail(url)
+       if html:                  #成功返回
+            result=parse_page_detail(html,url)
+            if result:
+                save_to_mongo(result)
+
+if __name__ == '__main__':
+    groups=[x*20 for x in range(GROUP_START,GROUP_END+1)]
+    pool=Pool()
+    pool.map(main,groups)
+
+
+
+
